@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { LoginForm } from '@/components/LoginForm';
 import { Sidebar }  from '@/components/Sidebar';
 import { Dashboard } from '@/components/Dashboard';
-import { ExcelScheduleGrid } from '@/components/modules/ExcelScheduleGrid';
+import { ExcelScheduleGrid } from "@/components/modules/ExcelScheduleGrid";
 import { FinancialModule } from '@/components/modules/FinancialModule';
 import { WhatsAppModule } from '@/components/modules/WhatsAppModule';
 import { PatientManagement } from '@/components/modules/PatientManagement';
@@ -19,6 +19,8 @@ import { SystemSettings } from '@/components/modules/Settings';
 import { TestDeleteComponent } from '@/components/TestDeleteComponent';
 import { Loader2 } from 'lucide-react';
 import { Toaster } from '@/components/ui/sonner';
+
+
 
 export default function Home() {
   const { user, isLoading } = useAuth();
