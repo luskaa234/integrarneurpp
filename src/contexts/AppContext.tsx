@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 
 // --- Tipos principais ---
-interface User {
+export interface User {
   id: string;
   name: string;
   email: string;
@@ -21,13 +21,16 @@ interface User {
   specialty?: string;
 }
 
+// 🔹 Alinhar com o banco: 'pendente' | 'confirmado' | 'cancelado' | 'realizado'
+export type AppointmentStatus = "pendente" | "confirmado" | "cancelado" | "realizado";
+
 export interface Appointment {
   id: string;
   patient_id: string;
   doctor_id: string;
   date: string;
   time: string;
-  status: "agendado" | "confirmado" | "cancelado" | "realizado";
+  status: AppointmentStatus; // <- corrigido
   type: string;
   notes?: string;
   price: number;
@@ -45,6 +48,16 @@ interface FinancialRecord {
   status: "pendente" | "pago" | "cancelado";
   created_at: string;
 }
+export interface MedicalRecord {
+  id: string;
+  patient_id: string;
+  doctor_id: string;
+  date: string;
+  description: string;
+  notes?: string;
+  created_at: string;
+}
+
 
 interface Service {
   id: string;
@@ -57,6 +70,8 @@ interface Service {
 // Tipos auxiliares para inserções
 type NewAppointment = Omit<Appointment, "id" | "created_at">;
 type NewFinancialRecord = Omit<FinancialRecord, "id" | "created_at">;
+type NewMedicalRecord = Omit<MedicalRecord, "id" | "created_at">;
+
 
 // --- Contexto ---
 interface AppContextType {
@@ -77,6 +92,14 @@ interface AppContextType {
   addPatient: (p: { name: string; phone?: string; email?: string }) => Promise<{ id: string } | null>;
   addDoctor: (d: { name: string; specialty?: string; phone?: string; email?: string }) => Promise<{ id: string } | null>;
 
+  medicalRecords: MedicalRecord[]; // ✅ lista de prontuários
+
+// Métodos de prontuários
+addMedicalRecord: (record: NewMedicalRecord) => Promise<boolean>;
+updateMedicalRecord: (id: string, record: Partial<MedicalRecord>) => Promise<boolean>;
+deleteMedicalRecord: (id: string) => Promise<boolean>;
+
+
   // Consultas
   addAppointment: (appointment: NewAppointment) => Promise<boolean>;
   updateAppointment: (id: string, appointment: Partial<Appointment>) => Promise<boolean>;
@@ -91,6 +114,8 @@ interface AppContextType {
   addService: (service: Omit<Service, "id">) => Promise<boolean>;
   updateService: (id: string, service: Partial<Service>) => Promise<boolean>;
   deleteService: (id: string) => Promise<boolean>;
+
+  
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -146,11 +171,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Usuários
   const addUser = async (userData: Omit<User, "id" | "created_at">): Promise<boolean> => {
     try {
-      const { data, error } = await supabase.from("users").insert([userData]).select().single();
-      if (error || !data) return false;
+      const { data, error } = await supabase
+        .from("users")
+        .insert([userData])
+        .select()
+        .single();
+
+      if (error) {
+        console.error("❌ Erro Supabase addUser:", error.message, error.details);
+        return false;
+      }
+
+      if (!data) {
+        console.error("❌ Nenhum dado retornado ao inserir usuário");
+        return false;
+      }
+
       setUsers((prev) => [data, ...prev]);
       return true;
-    } catch {
+    } catch (err) {
+      console.error("❌ Erro inesperado addUser:", err);
       return false;
     }
   };
@@ -179,14 +219,50 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addPatient = async (p: { name: string; phone?: string; email?: string }) => {
     if (!p.name?.trim()) return null;
-    const { data, error } = await supabase
-      .from("users")
-      .insert([{ name: p.name.trim(), email: p.email ?? "", phone: p.phone ?? "", role: "paciente", is_active: true }])
-      .select()
-      .single();
-    if (error || !data) return null;
-    setUsers((prev) => [data, ...prev]);
-    return { id: data.id };
+
+    try {
+      // 1) cria em users
+      const { data: user, error: userError } = await supabase
+        .from("users")
+        .insert([
+          {
+            name: p.name.trim(),
+            email: p.email ?? "",
+            phone: p.phone ?? "",
+            role: "paciente",
+            is_active: true,
+          },
+        ])
+        .select()
+        .single();
+
+      if (userError || !user) {
+        console.error("❌ Erro ao inserir em users:", userError?.message);
+        return null;
+      }
+
+      // 2) cria também em patients (FK user_id)
+      const { error: patientError } = await supabase
+        .from("patients")
+        .insert([
+          {
+            user_id: user.id,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+      if (patientError) {
+        console.error("⚠️ Usuário criado, mas erro ao inserir em patients:", patientError.message);
+        // opcional: você pode manter o user criado mesmo assim
+        return null;
+      }
+
+      setUsers((prev) => [user, ...prev]);
+      return { id: user.id };
+    } catch (err) {
+      console.error("❌ Erro inesperado addPatient:", err);
+      return null;
+    }
   };
 
   const addDoctor = async (d: { name: string; specialty?: string; phone?: string; email?: string }) => {
@@ -202,32 +278,106 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Consultas
-  const addAppointment = async (appointmentData: NewAppointment): Promise<boolean> => {
-    try {
-      const { data, error } = await supabase.from("appointments").insert([appointmentData]).select().single();
-      if (error || !data) return false;
-      setAppointments((prev) => [data, ...prev]);
+ const addAppointment = async (appointmentData: NewAppointment): Promise<boolean> => {
+  try {
+    // normaliza status para bater com o CHECK do banco
+    const ALLOWED: AppointmentStatus[] = ["pendente", "confirmado", "cancelado", "realizado"];
+    const raw = (appointmentData as any).status;
+    const cleaned = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+    const safeStatus: AppointmentStatus = (ALLOWED as string[]).includes(cleaned)
+      ? (cleaned as AppointmentStatus)
+      : "pendente";
 
-      const financialRecord: NewFinancialRecord = {
-        type: "receita",
-        amount: appointmentData.price,
-        description: `Consulta - ${appointmentData.type}`,
-        category: "Consulta",
-        date: appointmentData.date,
-        status: "pendente",
-        appointment_id: data.id,
-      };
-      await addFinancialRecord(financialRecord);
-      return true;
-    } catch {
+    const payload: NewAppointment = { ...appointmentData, status: safeStatus };
+
+    // 1) Pré-checagem de conflito (melhor UX)
+    const { data: conflicts, error: conflictErr } = await supabase
+      .from("appointments")
+      .select("id, status")
+      .eq("doctor_id", payload.doctor_id)
+      .eq("date", payload.date)
+      .eq("time", payload.time)
+      .neq("status", "cancelado")
+      .limit(1);
+
+    if (conflictErr) {
+      console.error("⚠️ Erro ao checar conflito:", conflictErr.message, conflictErr.details);
+      // segue adiante; o índice único no banco ainda protege corrida
+    } else if (conflicts && conflicts.length > 0) {
+      toast.error("Conflito: esse médico já tem agendamento nesse horário.");
       return false;
     }
-  };
 
+    // 2) Inserção (o índice único garante consistência)
+    const { data, error } = await supabase
+      .from("appointments")
+      .insert([payload])
+      .select()
+      .single();
+
+    if (error) {
+      // 23505 = unique_violation (Postgres)
+      if ((error as any).code === "23505") {
+        toast.error("Conflito: esse horário já foi reservado para o médico.");
+      } else {
+        console.error("❌ Erro Supabase addAppointment:", error.message, error.details);
+        toast.error("Erro ao criar agendamento.");
+      }
+      return false;
+    }
+    if (!data) {
+      console.error("❌ Nenhum dado retornado ao criar agendamento");
+      toast.error("Erro ao criar agendamento.");
+      return false;
+    }
+
+    setAppointments((prev) => [data, ...prev]);
+
+    await addFinancialRecord({
+      type: "receita",
+      amount: payload.price,
+      description: `Consulta - ${payload.type}`,
+      category: "Consulta",
+      date: payload.date,
+      status: "pendente",
+      appointment_id: data.id,
+    });
+
+    toast.success("Agendamento criado!");
+    return true;
+  } catch (err) {
+    console.error("❌ Erro inesperado addAppointment:", err);
+    toast.error("Erro ao criar agendamento.");
+    return false;
+  }
+};
+
+
+  // 🔹 Implementações que estavam faltando
   const updateAppointment = async (id: string, appointmentUpdate: Partial<Appointment>): Promise<boolean> => {
     try {
-      const { data, error } = await supabase.from("appointments").update(appointmentUpdate).eq("id", id).select().single();
+      const ALLOWED: AppointmentStatus[] = ["pendente", "confirmado", "cancelado", "realizado"];
+      let patch: Partial<Appointment> = { ...appointmentUpdate };
+
+      if (typeof patch.status === "string") {
+        const cleaned = patch.status.trim().toLowerCase() as AppointmentStatus;
+        if (!(ALLOWED as string[]).includes(cleaned)) {
+          // Se vier inválido, força 'pendente'
+          patch.status = "pendente";
+        } else {
+          patch.status = cleaned;
+        }
+      }
+
+      const { data, error } = await supabase
+        .from("appointments")
+        .update(patch)
+        .eq("id", id)
+        .select()
+        .single();
+
       if (error || !data) return false;
+
       setAppointments((prev) => prev.map((apt) => (apt.id === id ? data : apt)));
       return true;
     } catch {
@@ -239,9 +389,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const { error } = await supabase.from("appointments").delete().eq("id", id);
       if (error) return false;
+
       setAppointments((prev) => prev.filter((apt) => apt.id !== id));
+
+      // também remove financeiro vinculado
       await supabase.from("financial_records").delete().eq("appointment_id", id);
       setFinancialRecords((prev) => prev.filter((r) => r.appointment_id !== id));
+
       return true;
     } catch {
       return false;
@@ -319,33 +473,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AppContext.Provider
-      value={{
-        users,
-        doctors,
-        patients,
-        appointments,
-        financialRecords,
-        services,
-        loading,
-        error,
-        addUser,
-        updateUser,
-        deleteUser,
-        addPatient,
-        addDoctor,
-        addAppointment,
-        updateAppointment,
-        deleteAppointment,
-        addFinancialRecord,
-        updateFinancialRecord,
-        deleteFinancialRecord,
-        addService,
-        updateService,
-        deleteService,
-      }}
-    >
-      {children}
-    </AppContext.Provider>
+  value={{
+    users,
+    doctors,
+    patients,
+    appointments,
+    financialRecords,
+    services,
+    loading,
+    error,
+    addUser,
+    updateUser,
+    deleteUser,
+    addPatient,
+    addDoctor,
+    addAppointment,
+    updateAppointment,
+    deleteAppointment,
+    addFinancialRecord,
+    updateFinancialRecord,
+    deleteFinancialRecord,
+    addService,
+    updateService,
+    deleteService,
+
+    // 🔹 Novos para prontuários
+    medicalRecords,
+    addMedicalRecord,
+    updateMedicalRecord,
+    deleteMedicalRecord,
+  }}
+>
+  {children}
+</AppContext.Provider>
+
   );
 }
 

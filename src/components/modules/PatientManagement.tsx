@@ -11,10 +11,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { UserPlus, Edit, Phone, Calendar, FileText, Eye, Loader2, Trash2 } from 'lucide-react';
 import { useApp } from '@/contexts/AppContext';
+import type { User } from '@/contexts/AppContext'; // ✅ Importa o tipo User
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { toast } from 'sonner';
+
 
 const patientSchema = z.object({
   name: z.string().min(1, 'Nome é obrigatório'),
@@ -54,20 +56,22 @@ export function PatientManagement() {
   });
 
   const onSubmit = async (data: PatientFormData) => {
-    const success = await addUser({
-      ...data,
-      role: 'paciente',
-      is_active: true
-    });
+  const success = await addUser({
+    ...data,
+    role: "paciente",
+    is_active: true,
+  } as Omit<User, "id" | "created_at">);
 
-    if (success) {
-      toast.success('Paciente cadastrado com sucesso!');
-      reset();
-      setIsDialogOpen(false);
-    } else {
-      toast.error('Erro ao cadastrar paciente');
-    }
-  };
+  if (success) {
+    toast.success("Paciente cadastrado com sucesso!");
+    reset();
+    setIsDialogOpen(false);
+  } else {
+    toast.error("Erro ao cadastrar paciente"); // ⬅️ É AQUI
+  }
+};
+
+
 
   const onSubmitEdit = async (data: PatientFormData) => {
     if (!editingPatient) return;
